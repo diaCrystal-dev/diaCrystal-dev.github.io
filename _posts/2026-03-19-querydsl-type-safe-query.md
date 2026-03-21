@@ -7,11 +7,11 @@ tags: [spring, querydsl, jpa, java, dynamic-query]
 
 # QueryDSL: 문자열이 아닌 코드로 쿼리 작성하기 🧑‍💻
 
-JPA와 JPQL을 사용하다 보면 언젠가 한 번은 반드시 마주치게 되는 한계가 있습니다. 바로 **타입 불안정성**과 **동적 쿼리의 복잡성**입니다. 이 글에서는 이 두 가지 문제를 우아하게 해결해 주는 **QueryDSL**에 대해 처음부터 단계별로 정리합니다.
-
 ---
 
 ## 1. 왜 QueryDSL이 필요한가? (기존 방식의 문제점)
+
+JPA와 JPQL을 사용하다 보면 언젠가 한 번은 반드시 마주치게 되는 한계가 있습니다. **타입 불안정성**, **SQL Injection 방어 부재**, **동적 쿼리의 복잡성**이 그것입니다. 먼저 기존 방식의 핵심 문제점들을 살펴보겠습니다.
 
 ### 문제점 1: 타입 불안정성 (Not Type-Safe)
 
@@ -23,9 +23,24 @@ JPQL은 결국 **문자열(String)**입니다. 따라서 컴파일 시점에는 
 List<User> findByName(String name);
 ```
 
-위 코드는 컴파일도 정상적으로 되고, IDE에서도 아무런 경고가 뜨지 않습니다. 실제로 메서드가 호출되는 순간에야 `No field named usrname` 에러가 발생하며 런타임에 장애를 일으킵니다.
+> ⚠️ **런타임 에러**: 위 코드는 컴파일도 정상적으로 되고, IDE에서도 아무런 경고가 뜨지 않습니다. 실제로 메서드가 호출되는 순간에야 `No field named usrname` 에러가 발생하며 런타임에 장애를 일으킵니다.
 
-### 문제점 2: 동적 쿼리의 고통
+### 문제점 2: SQL Injection 방어 부재
+
+JPQL(네이티브 쿼리)은 파라미터 바인딩을 개발자가 직접 챙기지 않으면 SQL Injection 공격에 그대로 노출됩니다. 아래처럼 외부 입력값을 문자열로 직접 이어붙이는 순간, 공격자가 쿼리 구조 자체를 바꿔버릴 수 있습니다.
+
+```java
+// ❌ 위험: 사용자 입력을 문자열로 직접 이어붙임
+String name = request.getParameter("name"); // 입력값: "kim' OR '1'='1"
+String jpql = "SELECT u FROM User u WHERE u.username = '" + name + "'";
+// 실행되는 쿼리: WHERE u.username = 'kim' OR '1'='1'
+// → 전체 유저 정보가 노출된다!
+```
+
+> 🔒 **결론: 어쩔 수 없는 상황 외엔 날쿼리(네이티브 쿼리) 금지**  
+> JPQL/네이티브 쿼리는 **반드시 필요한 상황(예: 극도로 복잡한 스파게티 쿼리, DB 벤더 전용 함수 사용 등)**을 제외하고는 사용을 지양해야 합니다. QueryDSL은 내부적으로 PreparedStatement 방식의 파라미터 바인딩을 사용하기 때문에, SQL Injection을 구조적으로 차단합니다.
+
+### 문제점 3: 동적 쿼리의 고통
 
 검색 조건이 다양해지는 '동적 쿼리'를 작성할 때, JPQL 문자열을 조건에 따라 `if`문으로 조합하는 방식은 코드를 매우 복잡하고 지저분하게 만듭니다.
 
@@ -39,7 +54,7 @@ public List<User> searchUsers(String name, Integer age) {
                         if (age != null) {
                                 jpql += " AND u.age = :age";
                                     }
-                                        // ...
+                                        // 조건이 늘어날수록 문자열이 복잡해지고 실수가 생기기 쉽다
                                         }
                                         ```
 
@@ -60,15 +75,15 @@ public List<User> searchUsers(String name, Integer age) {
                                                     .fetch();
                                                     ```
 
-                                                    핵심 장점은 다음과 같습니다.
+                                                    | 비교 항목 | JPQL (문자열) | QueryDSL |
+                                                    |---|---|---|
+                                                    | SQL Injection | 직접 방어 필요 | 구조적으로 차단 |
+                                                    | 타입 안전성 | ✗ 없음 | ✓ 보장 |
+                                                    | 오타 감지 | 런타임에 발견 | 컴파일 시점에 감지 |
+                                                    | 동적 쿼리 | 문자열 조합 → 복잡 | BooleanExpression → 깔끔 |
+                                                    | IDE 지원 | 자동완성 없음 | Q타입으로 자동완성 |
 
-                                                    - **컴파일 타임 오류 감지**: 필드명 오타나 타입 불일치를 IDE와 컴파일러가 즉시 잡아줍니다.
-                                                    - **동적 쿼리의 간결한 표현**: `BooleanBuilder`나 `BooleanExpression`을 활용해 동적 조건을 깔끔하게 조합할 수 있습니다.
-                                                    - **IDE 자동완성 지원**: Q타입 클래스 덕분에 필드명을 자동완성으로 입력할 수 있습니다.
-
-                                                    ---
-
-                                                    ## 3. QueryDSL 기본 설정 (build.gradle)
+                                                    ### QueryDSL 기본 설정 (build.gradle)
 
                                                     QueryDSL을 사용하려면 `build.gradle`에 의존성과 Q타입 생성 설정을 추가해야 합니다.
 
@@ -94,11 +109,11 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                     }
                                                                                     ```
 
-                                                                                    설정 후 `./gradlew compileJava`를 실행하면 `src/main/generated` 경로에 `QUser`, `QProduct` 등 Q타입 클래스들이 자동으로 생성됩니다.
+                                                                                    > 💡 **Q타입 생성**: 설정 후 `./gradlew compileJava`를 실행하면 `src/main/generated` 경로에 `QUser`, `QProduct` 등 Q타입 클래스들이 자동으로 생성됩니다.
 
                                                                                     ---
 
-                                                                                    ## 4. QueryDSL을 활용한 동적 쿼리 작성법 🔧
+                                                                                    ## 3. QueryDSL을 활용한 동적 쿼리 작성법 🔧
 
                                                                                     ### 준비 단계: JPAQueryFactory Bean 등록
 
@@ -107,7 +122,6 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                     ```java
                                                                                     @Configuration
                                                                                     public class QueryDslConfig {
-
                                                                                         @PersistenceContext
                                                                                             private EntityManager entityManager;
 
@@ -126,7 +140,6 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                                                 @Repository
                                                                                                                 @RequiredArgsConstructor
                                                                                                                 public class UserRepositoryImpl {
-
                                                                                                                     private final JPAQueryFactory queryFactory;
 
                                                                                                                         public List<User> searchUsers(String name, Integer age) {
@@ -150,18 +163,18 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                                                                                                                                                                                             }
                                                                                                                                                                                                                                                             ```
 
-                                                                                                                                                                                                                                                            `where()`에 `null`을 전달하면 해당 조건은 자동으로 무시됩니다. 이 방식은 각 조건을 독립적인 메서드로 분리하여 **재사용성**과 **가독성**을 동시에 높여줍니다.
+                                                                                                                                                                                                                                                            > ✅ **포인트**: `where()`에 `null`을 전달하면 해당 조건은 자동으로 무시됩니다. 각 조건을 독립적인 메서드로 분리하여 **재사용성**과 **가독성**을 동시에 높여줍니다.
 
                                                                                                                                                                                                                                                             ---
 
-                                                                                                                                                                                                                                                            ## 5. QueryDSL 심화: Join, 페이징 처리 🚀
+                                                                                                                                                                                                                                                            ## 4. QueryDSL 심화: Join, 페이징 처리 🚀
 
                                                                                                                                                                                                                                                             ### 연관된 데이터 함께 가져오기: Join
 
                                                                                                                                                                                                                                                             QueryDSL에서는 `join()`을 사용하여 엔티티 간의 조인을 직관적으로 표현할 수 있습니다.
 
                                                                                                                                                                                                                                                             ```java
-                                                                                                                                                                                                                                                            QOrder order = QOrder.order;
+                                                                                                                                                                                                                                                            QOrder  order  = QOrder.order;
                                                                                                                                                                                                                                                             QMember member = QMember.member;
 
                                                                                                                                                                                                                                                             List<Order> orders = queryFactory
@@ -196,9 +209,11 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                                                                                                                                                                                                                                                                                                     }
                                                                                                                                                                                                                                                                                                                                                                     ```
 
+                                                                                                                                                                                                                                                                                                                                                                    > 💡 **성능 팁**: count 쿼리를 분리하면, 페이지 데이터 조회와 전체 개수 조회가 독립적으로 실행되어 불필요한 조인이나 복잡한 서브쿼리 없이 각각 최적화된 쿼리를 사용할 수 있습니다.
+
                                                                                                                                                                                                                                                                                                                                                                     ---
 
-                                                                                                                                                                                                                                                                                                                                                                    ## 6. QueryDSL 프로젝션으로 DTO 깔끔하게 조회하기 ✨
+                                                                                                                                                                                                                                                                                                                                                                    ## 5. QueryDSL 프로젝션으로 DTO 깔끔하게 조회하기 ✨
 
                                                                                                                                                                                                                                                                                                                                                                     ### 왜 DTO로 직접 조회해야 할까?
 
@@ -211,7 +226,7 @@ public List<User> searchUsers(String name, Integer age) {
                                                                                                                                                                                                                                                                                                                                                                     ### @QueryProjection 사용 방법
 
                                                                                                                                                                                                                                                                                                                                                                     ```java
-                                                                                                                                                                                                                                                                                                                                                                    // DTO 정의
+                                                                                                                                                                                                                                                                                                                                                                    // ProductDto.java (DTO 정의)
                                                                                                                                                                                                                                                                                                                                                                     @Data
                                                                                                                                                                                                                                                                                                                                                                     public class ProductDto {
                                                                                                                                                                                                                                                                                                                                                                         private String name;
@@ -229,7 +244,7 @@ public List<User> searchUsers(String name, Integer age) {
 
                                                                                                                                                                                                                                                                                                                                                                                                                     ```java
                                                                                                                                                                                                                                                                                                                                                                                                                     // 쿼리에서 DTO로 직접 조회
-                                                                                                                                                                                                                                                                                                                                                                                                                    QProduct product = QProduct.product;
+                                                                                                                                                                                                                                                                                                                                                                                                                    QProduct  product  = QProduct.product;
                                                                                                                                                                                                                                                                                                                                                                                                                     QCategory category = QCategory.category;
 
                                                                                                                                                                                                                                                                                                                                                                                                                     List<ProductDto> results = queryFactory
@@ -245,14 +260,20 @@ public List<User> searchUsers(String name, Integer age) {
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 ### @QueryProjection의 장점과 단점
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                **장점**: 타입 안전성이 보장되며, IDE 자동완성을 활용할 수 있습니다. `Projections.constructor()`보다 컴파일 타임에 오류를 잡을 수 있습니다.
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                **장점**
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - 타입 안전성 보장
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - IDE 자동완성 활용 가능
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - 컴파일 타임에 오류 감지
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - `Projections.constructor()` 대비 안전
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                **단점**: DTO가 QueryDSL에 의존하게 됩니다. 순수한 DTO를 원한다면 `Projections.bean()` 또는 `Projections.constructor()`를 사용하는 대안도 있습니다.
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                **단점**
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - DTO가 QueryDSL에 의존
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - 순수 DTO 유지 불가
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - 대안: `Projections.bean()`
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                - 대안: `Projections.constructor()`
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 ---
 
                                                                                                                                                                                                                                                                                                                                                                                                                                                                 ## 마무리
 
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                QueryDSL은 단순히 "쿼리를 코드로 쓰는 도구"가 아닙니다. **컴파일 타임 안전성**, **동적 쿼리의 우아한 표현**, **IDE 지원**이라는 세 가지 강력한 이점을 통해 JPA 기반 애플리케이션의 데이터 접근 계층을 한 단계 끌어올려 주는 핵심 도구입니다.
-
-                                                                                                                                                                                                                                                                                                                                                                                                                                                                처음 설정이 다소 번거롭게 느껴질 수 있지만, 한 번 익숙해지면 복잡한 동적 쿼리도 자신감 있게 작성할 수 있게 됩니다. 특히 검색 조건이 많은 실무 프로젝트에서 QueryDSL의 진가를 발휘할 수 있습니다.
+                                                                                                                                                                                                                                                                                                                                                                                                                                                                QueryDSL은 단순히 "쿼리를 코드로 쓰는 도구"가 아닙니다. **컴파일 타임 안전성**, **동적 쿼리의 우아한 표현**, **IDE 지원**이라는 세 가지 강력한 이점을 통해 JPA 기반 애플리케이션의 데이터 접근 계층을 한 단계 끌어올려 주는 핵심 도구입니다. 특히 검색 조건이 많은 실무 프로젝트에서 QueryDSL의 진가를 발휘할 수 있습니다.
